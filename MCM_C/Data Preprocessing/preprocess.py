@@ -569,13 +569,33 @@ class DWTSDataPreprocessor:
                 "Weeks": {}
             }
 
-            weeks_in_season = sorted(set(
-                int(re.search(r'week(\d+)', c).group(1))
-                for c in ratio_cols_all
-                if (season_df[f'week{int(re.search(r"week(\d+)", c).group(1))}_judge_score_ratio'].notna().any())
-            ))
+            # Identify weeks that actually have score ratios for this season.
+            # NOTE: avoid backslashes inside f-string expressions for compatibility.
+            weeks_in_season_list = []
+            for c in ratio_cols_all:
+                m_w = re.search(r'week(\d+)', c)
+                if not m_w:
+                    continue
+                w = int(m_w.group(1))
+                colname = f'week{w}_judge_score_ratio'
+                if colname in season_df.columns and season_df[colname].notna().any():
+                    weeks_in_season_list.append(w)
+            weeks_in_season = sorted(set(weeks_in_season_list))
 
             last_survivors = set(season_df['celebrity_name'].unique())
+
+            # ---- FIX: parse elimination week from 'results' (NOT from placement) ----
+            # results examples: "Eliminated Week 2", "1st Place", "3rd Place", etc.
+            elim_week_map = {}
+            tmp = season_df[['celebrity_name', 'results']].drop_duplicates()
+            for _, rr in tmp.iterrows():
+                name = rr['celebrity_name']
+                res = str(rr.get('results', ''))
+                m_elim = re.search(r'Eliminated\s*Week\s*(\d+)', res, flags=re.IGNORECASE)
+                if m_elim:
+                    elim_week_map[name] = int(m_elim.group(1))
+                else:
+                    elim_week_map[name] = None
 
             for week in weeks_in_season:
                 week_col = f'week{week}_judge_score_ratio'
@@ -604,11 +624,13 @@ class DWTSDataPreprocessor:
 
                 features_matrix = np.array([get_features(r) for _, r in this_week_df.iterrows()])
 
-                # 淘汰选手：该周final_placement == week（表示本周被淘汰）
-                eliminated = season_df[season_df['final_placement'] == week]['celebrity_name'].tolist()
+                # ---- FIX: elimination is defined by 'results' text (Eliminated Week k) ----
+                # Only mark elimination among current-week contestants to keep alignment.
+                eliminated = [n for n in contestants if elim_week_map.get(n, None) == week]
 
-                # 幸存选手 上周幸存且本周未被淘汰
-                survivors = list(last_survivors.difference(set(eliminated)))
+                # Survivors = current contestants not eliminated (also intersect with last_survivors for robustness)
+                survivors = [n for n in contestants if (n in last_survivors) and (n not in set(eliminated))]
+
 
                 week_level_data[season_str]["Weeks"][f"Week_{week}"] = {
                     "Contestants": contestants,
@@ -818,7 +840,7 @@ class DWTSDataPreprocessor:
 
         # Save week-level hierarchical data for modeling (NEW)
         import json
-        week_level_file = os.path.join(output_dir, 'week_level_data.json')
+        week_level_file = os.path.join(output_dir, 'week_level_data_corrected.json')
         with open(week_level_file, 'w') as f:
             json.dump(self.week_level_data, f, indent=2)
 
@@ -924,7 +946,7 @@ class DWTSDataPreprocessor:
 if __name__ == "__main__":
     # Define paths
     DATA_PATH = r"C:\Users\11411\Desktop\Python\MCM_C\data\2026_MCM_Problem_C_Data.csv"
-    OUTPUT_DIR = r"C:\Users\11411\Desktop\Python\MCM_C\data\porcessed data"
+    OUTPUT_DIR = r"C:\Users\11411\Desktop\Python\MCM_C\data\processed data"
 
     # Run enhanced preprocessing
     preprocessor = DWTSDataPreprocessor(DATA_PATH)
